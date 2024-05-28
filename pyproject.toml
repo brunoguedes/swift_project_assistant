@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "project_summarisation_assistant"
+version = "0.1.0"
+description = ""
+authors = ["Bruno Guedes <bruno@bclgapps.com.au>"]
+readme = "README.md"
+packages = [{include = "project_summarisation_assistant", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+streamlit = "^1.35.0"
+python-dotenv = "^1.0.1"
+langchain = "^0.2.1"
+langchain-community = "^0.2.1"
+langchain-anthropic = "^0.1.13"
+langchain-openai = "^0.1.7"
+langchain-groq = "^0.1.4"
+
+
+[build-system]poet
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
