@@ -22,12 +22,12 @@ def extract_provides(structure):
             provides.append(item['key.name'])
     return provides
 
-def extract_depends(structure):
+def extract_depends_per_item(item):
     depends = []
     
     def extract_from_substructure(substructure):
-        for item in substructure:
-            if item.get('key.kind') in [
+        for sub_item in substructure:
+            if sub_item.get('key.kind') in [
                 'source.lang.swift.expr.call',
                 'source.lang.swift.decl.var.instance',
                 'source.lang.swift.decl.var.local',
@@ -36,34 +36,76 @@ def extract_depends(structure):
                 'source.lang.swift.decl.function.method.class',
                 'source.lang.swift.decl.function.method.instance'
             ]:
-                typename = item.get('key.typename')
+                typename = sub_item.get('key.typename')
                 if typename:
                     depends.append(typename)
-            if 'key.substructure' in item:
-                extract_from_substructure(item['key.substructure'])
+            if 'key.substructure' in sub_item:
+                extract_from_substructure(sub_item['key.substructure'])
     
-    extract_from_substructure(structure.get('key.substructure', []))
+    extract_from_substructure(item.get('key.substructure', []))
     
-    # Remove duplicates by converting the list to a set and back to a list
-    depends = list(set(depends))
+    return list(set(depends))
+
+def parse_instance_variable(var_json):
+    """
+    Parse a JSON object representing an instance variable and return its declaration.
+
+    Parameters:
+    - var_json (dict): The JSON object representing the instance variable.
+
+    Returns:
+    - str: The instance variable declaration.
+    """
+    if var_json.get("key.kind") != "source.lang.swift.decl.var.instance":
+        return ""
+
+    var_name = var_json.get("key.name", "unknown_var")
+    var_type = var_json.get("key.typename", None)
+
+    var_declaration = f"{var_name}"
+    if var_type:
+        var_declaration = f"{var_name}: {var_type}"
     
-    return depends
+    return var_declaration
+
+def parse_instance_method(method_json):
+    """
+    Parse a JSON object representing an instance method and return its signature.
+
+    Parameters:
+    - method_json (dict): The JSON object representing the method.
+
+    Returns:
+    - str: The method signature.
+    """
+    if method_json.get("key.kind") != "source.lang.swift.decl.function.method.instance":
+        return ""
+
+    method_name = method_json.get("key.name", "unknown_method")
+    return_type = method_json.get("key.typename", "Void")
+    parameters = []
+
+    for param in method_json.get("key.substructure", []):
+        if param.get("key.kind") == "source.lang.swift.decl.var.parameter":
+            param_name = param.get("key.name", "param")
+            param_type = param.get("key.typename", "Any")
+            parameters.append(f"{param_name}: {param_type}")
+
+    params_str = ", ".join(parameters)
+    method_signature = f"func {method_name.split('(')[0]}({params_str}) -> {return_type}"
+    
+    return method_signature
 
 def extract_instance_variables_and_methods(structure):
     instance_variables = []
     methods = []
-    
-    def extract_from_substructure(substructure):
-        for item in substructure:
-            if item.get('key.kind') == 'source.lang.swift.decl.var.instance':
-                instance_variables.append(item['key.name'])
-            elif item.get('key.kind') == 'source.lang.swift.decl.function.method.instance':
-                methods.append(item['key.name'])
-            if 'key.substructure' in item:
-                extract_from_substructure(item['key.substructure'])
-    
-    extract_from_substructure(structure.get('key.substructure', []))
-    
+
+    for item in structure.get('key.substructure', []):
+        if item['key.kind'] == 'source.lang.swift.decl.var.instance':
+            instance_variables.append(parse_instance_variable(item))
+        elif item['key.kind'] == 'source.lang.swift.decl.function.method.instance':
+            methods.append(parse_instance_method(item))
+
     return instance_variables, methods
 
 def analyze_file(file_path):
@@ -75,14 +117,16 @@ def analyze_file(file_path):
         for substructure in structure.get('key.substructure', []):
             if substructure['key.name'] == item:
                 instance_variables, methods = extract_instance_variables_and_methods(substructure)
+                depends = extract_depends_per_item(substructure)
                 file_analysis.append({
                     "type": item,
                     "instance_variables": instance_variables,
-                    "methods": methods
+                    "methods": methods,
+                    "depends": depends
                 })
-
     return {
         "file": file_path,
+        "provides": provides,
         "details": file_analysis,
         "structure": structure
     }

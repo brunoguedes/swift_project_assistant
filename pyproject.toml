@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "project_summarisation_assistant"
+name = "swift_project_assistant"
 version = "0.1.0"
 description = ""
 authors = ["Bruno Guedes <bruno@bclgapps.com.au>"]
 readme = "README.md"
-packages = [{include = "project_summarisation_assistant", from = "src"}]
+packages = [{include = "swift_project_assistant", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -17,6 +17,6 @@ langchain-openai = "^0.1.7"
 langchain-groq = "^0.1.4"
 
 
-[build-system]poet
+[build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

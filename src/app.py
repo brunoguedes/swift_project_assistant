@@ -1,11 +1,12 @@
 import os
 from dotenv import load_dotenv
-
+from pathlib import Path
 import streamlit as st
 
 from bclg_apps.files_manager import FilesManager
 from bclg_apps.llms import LLMs
 import swift_dependency_analysis as sda
+import prompt_generator as prompt_generator
 import json
 
 from langchain.prompts import PromptTemplate
@@ -16,7 +17,7 @@ class App:
     def run(self):
         load_dotenv()
         is_local = os.getenv("IS_LOCAL", "false").lower() == "true"
-        st.title('Project Summarization Assistant')
+        st.title('Swift Project Assistant')
 
         # LLM Picker
         llms = LLMs()
@@ -27,7 +28,7 @@ class App:
         )
         llm = llms.get_llm(chosen_llm)
 
-        file_types = st.text_input("Enter the file types you'd like to summarize (comma-separated)", value="swift,storyboard").split(',')
+        file_types = st.text_input("Enter the file types you'd like to summarize (comma-separated)", value="swift").split(',')
         exclude_folders = st.text_area('Folders to exclude (comma separated)', value='.git,.DS_Store,Pods').split(',')
 
         # Clean up the exclude_folders list
@@ -52,28 +53,39 @@ class App:
         if 'analysis_results' in st.session_state:
             analysis_results = st.session_state.analysis_results
 
+            if st.button('Generate RAG Data'):
+                for item in analysis_results:
+                    file_path = item["file"]
+                    summary = prompt_generator.generate_summary_prompt(llm, item)
+                    
+                    # Change the file extension to .md and save under "documentation" folder
+                    md_file_path = Path(f"{base_path}/documentation") / Path(file_path).with_suffix('.md').name
+                    
+                    # Create necessary directories if they don't exist
+                    md_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Write the summary content to the markdown file
+                    with open(md_file_path, 'w') as md_file:
+                        md_file.write(summary)
+                    st.success(f"Summary saved to {md_file_path}")
+                    
             # File picker
             file_picker = st.selectbox('Select a file to inspect', options=[result['file'] for result in analysis_results])
             if file_picker:
                 selected_file_details = next(item for item in analysis_results if item["file"] == file_picker)
-                types = [detail['type'] for detail in selected_file_details['details']]
-
-                # Type picker
-                type_picker = st.selectbox('Select a type to inspect', options=types)
-                if type_picker:
-                    selected_type_details = next(detail for detail in selected_file_details['details'] if detail['type'] == type_picker)
-                    methods = selected_type_details['methods']
-
-                    # Method picker
-                    method_picker = st.selectbox('Select a method to get its implementation', options=methods)
-                    if method_picker:
-                        if st.button('Find Implementation'):
-                            method_implementation = sda.get_method_implementation(file_picker, selected_file_details['structure'], method_picker)
-                            if method_implementation:
-                                st.subheader(f'Method Implementation for {method_picker}')
-                                st.code(method_implementation, language='swift')
-                            else:
-                                st.write(f'Method {method_picker} not found.')
+                if st.button('Generate Summary'):
+                    summary = prompt_generator.generate_summary_prompt(llm, selected_file_details)
+                    st.session_state.summary = summary
+                    st.session_state.display_option = "Markdown"
+                
+                if 'summary' in st.session_state:
+                    summary = st.session_state.summary
+                    display_option = st.radio("Choose display format:", ["Markdown", "Code"], index=0 if st.session_state.display_option == "Markdown" else 1, key='display_option')
+                    
+                    if display_option == "Markdown":
+                        st.markdown(summary)
+                    else:
+                        st.code(summary, language='markdown')
 
 if __name__ == "__main__":
     load_dotenv()

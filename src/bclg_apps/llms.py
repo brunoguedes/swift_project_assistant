@@ -4,7 +4,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_groq import ChatGroq
 
 class LLMs:
-    def __init__(self, temperature=0.7):
+    def __init__(self, temperature=0.4):
         self.llm_map = {
             "GPT-3.5 Turbo": {
                 "llm": lambda: ChatOpenAI(model_name="gpt-3.5-turbo", temperature=temperature),
@@ -26,7 +26,7 @@ class LLMs:
                 "max_context_length": 100000,
                 "is_local": False
             },
-            "llama3 Groq": {
+            "llama3-70b Groq": {
                 "llm": lambda: ChatGroq(model="llama3-70b-8192", temperature=temperature),
                 "max_context_length": 8192,
                 "is_local": False
