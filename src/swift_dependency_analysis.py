@@ -115,7 +115,7 @@ def analyze_file(file_path):
 
     for item in provides:
         for substructure in structure.get('key.substructure', []):
-            if substructure['key.name'] == item:
+            if substructure.get('key.name') == item:
                 instance_variables, methods = extract_instance_variables_and_methods(substructure)
                 depends = extract_depends_per_item(substructure)
                 file_analysis.append({

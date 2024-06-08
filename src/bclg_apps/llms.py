@@ -33,7 +33,7 @@ class LLMs:
             },
             "llama3": {
                 "llm": lambda: Ollama(model="llama3", temperature=temperature),
-                "max_context_length": 4096,
+                "max_context_length": 8192,
                 "is_local": True
             },
             "openhermes": {
@@ -46,9 +46,24 @@ class LLMs:
                 "max_context_length": 4096,
                 "is_local": True
             },
-            "mixtral": {
+            "Mixtral 8x7b": {
                 "llm": lambda: Ollama(model="mixtral", temperature=temperature),
+                "max_context_length": 32768,
+                "is_local": True
+            },
+            "Mixtral 8x7b Groq": {
+                "llm": lambda: ChatGroq(model="mixtral-8x7b-32768", temperature=temperature),
+                "max_context_length": 32768,
+                "is_local": False
+            },
+            "codegemma": {
+                "llm": lambda: Ollama(model="codegemma", temperature=temperature),
                 "max_context_length": 4096,
+                "is_local": True
+            },
+            "codestral": {
+                "llm": lambda: Ollama(model="codestral", temperature=temperature),
+                "max_context_length": 32768,
                 "is_local": True
             }
         }

@@ -1,6 +1,13 @@
 import os
 
 class FilesManager:
+    def relative_file_path(self, base_path, file_path):
+        # Normalize the base path to remove any trailing slashes
+        normalized_base_path = os.path.normpath(base_path)
+        # Remove the base path from the file path
+        relative_file_path = file_path.replace(normalized_base_path + os.sep, '')
+        return relative_file_path
+
     def list_files(self, base_path="./", exclude=None):
         if exclude is None:
             exclude = []
