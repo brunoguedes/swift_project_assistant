@@ -21,61 +21,71 @@ def generate_code_summary(llm, programming_language, base_path, file_analysis):
 
     details = file_analysis.get("details", [])
     
-    types_details = []
+    file_summary = ""
     for detail in details:
         type_name = detail.get("type", "Unknown type")
         instance_variables = detail.get("instance_variables", [])
         methods = detail.get("methods", [])
         depends = detail.get("depends", [])
 
-        type_detail = {
-            "type_name": type_name,
-            "instance_variables": instance_variables,
-            "methods": methods,
-            "depends": depends
-        }
-        types_details.append(type_detail)
 
-    types_details_json = json.dumps(types_details, indent=4)
+        type_content = file_content
+        structure = file_analysis.get("structure", None)
+        if structure:
+            type_content = get_type_content(file_content=file_content, file_structure=structure, type_name=type_name)
 
-    # Create the template string
-    template_str = """
-You are a code documentation generator specialized in the {programming_language} programming language. Your task is to generate documentation in markdown format of {programming_language} files.
+        code_details_prompt = f"""
+        You are a code documentation generator specialized in the {programming_language} programming language. Your task is to generate documentation in markdown format of {programming_language} files.
 
-Please follow these instructions:
-- Do not include any conversational comments or introductory phrases.
-- Only output the documentation in the specified format.
-- Don't add "disclaimers" or "notes" that you didn't find some information. If you can't find some information, simply omit it from the output.
-- Bullet point lists should use the "-" character.
-- Generate your output using the 2 inputs:
-  - Input 1: A json containing details of each type defined in a {programming_language} file. This details include: instance variables, methods and dependencies.
-  - Input 2: The content of the {programming_language} file we want to document.
+        The source code to be documented is presented below in between "source_code" tags:
+        <source_code>
+        {type_content}
+        </source_code>
 
-For each of the types you receive in the json, follow the steps bellow to generate your output:
-  1- Add a top level title which will be the type name.
-  2- Add a summary of what the type does.
-  3- If the type has any instance variables, add a sub-section "Instance Variables", that will contain a bullet point list off all instance variables with it's types and a short description.
-  4- If the type has any methods, add a sub-section "Methods", that will contain a bullet point list off all methods including their return type, parameters types and a short description.
-  5- If the type has any dependencies, add a sub-section "Dependencies", that will contain a bullet point list off all dependencies (types).
+        Based on the source code provided, write a document in markdown format containing the following:
+        - A title "# {type_name}".
+        - Under "## Summary", a description of what {type_name} does and how {type_name} can be used.
+        """
 
-Input 1:
-```
-Types Details:
+        # Append sections conditionally
+        if instance_variables:
+            code_details_prompt += """
+        - Under "## Instance Variables", a list of the instance variables in the source code ({instance_variables}), their types and their description.
+        """.format(instance_variables=", ".join(instance_variables))
 
-{types_details}
-```
+        if methods:
+            code_details_prompt += """
+        - Under "## Methods", a list of the methods defined in the source code ({methods}), including their definition and their description.
+        """.format(methods=", ".join(methods))
 
-Input 2:
-Bellow is the content of the {programming_language} file:
-```
-{file_content}
-```
-"""
+        if depends:
+            code_details_prompt += """
+        - Under "## Dependencies", a list of the external dependencies ({depends}).
+        """.format(depends=", ".join(depends))
 
-    # Create and return the prompt template
-    prompt_template = PromptTemplate(input_variables=["programming_language", "file_path", "types_details", "file_content"], template=template_str)
+        code_details_prompt += """
+        Important:
+        - Do not include any conversational comments or introductory phrases.
+        - Only output the documentation in the specified format.
+        - Don't add "disclaimers" or "notes" that you didn't find some information. If you can't find some information, simply omit it from the output.
+        - Bullet point lists should use the "-" character.
+        """
+        result = llm.invoke(code_details_prompt)
+        summary = ""
+        if isinstance(result, str):
+            summary = result
+        else:
+            summary = result.content
+        file_summary += summary + "\n\n"
+    return file_summary
 
-    chain = LLMChain(llm=llm, prompt=prompt_template, verbose=True, output_key='summary_output')
-    summary = chain.run(programming_language=programming_language, file_path=file_path, types_details=types_details_json, file_content=file_content)
-    
-    return summary
+def extract_content(file_content, start_offset, end_offset):
+    return file_content[start_offset:end_offset].strip()
+
+def get_type_content(file_content, file_structure, type_name):
+    for item in file_structure['key.substructure']:
+        if item.get('key.name') == type_name:
+            start_offset = item['key.offset']-1
+            end_offset = start_offset + item['key.length']
+            return extract_content(file_content, start_offset, end_offset)
+    return None

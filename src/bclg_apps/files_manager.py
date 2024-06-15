@@ -1,4 +1,5 @@
 import os
+import shutil
 
 class FilesManager:
     def relative_file_path(self, base_path, file_path):
@@ -74,3 +75,23 @@ class FilesManager:
                     relative_path = os.path.relpath(os.path.join(root, file), base_path)
                     result.append(relative_path)
         return sorted(result)
+    def delete_folder(self, folder_path):
+        """
+        Delete a folder and all its contents.
+
+        Args:
+            folder_path (str): The path to the folder to be deleted.
+
+        Returns:
+            bool: True if the folder was successfully deleted, False otherwise.
+        """
+        try:
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+                return True
+            else:
+                print(f"The folder {folder_path} does not exist.")
+                return False
+        except Exception as e:
+            print(f"An error occurred while trying to delete the folder {folder_path}: {str(e)}")
+            return False

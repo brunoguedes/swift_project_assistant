@@ -18,7 +18,9 @@ class App:
     def run(self):
         load_dotenv()
         is_local = os.getenv("IS_LOCAL", "false").lower() == "true"
-        st.title('Swift Project Assistant')
+        programming_language = "Swift"
+        embedding_type = "openai"
+        st.title(body=f"{programming_language} Project Assistant")
 
         # LLM Picker
         llms = LLMs()
@@ -29,7 +31,7 @@ class App:
         )
         llm = llms.get_llm(chosen_llm)
 
-        file_types = st.text_input("Enter the file types you'd like to summarize (comma-separated)", value="swift").split(',')
+        file_types = st.text_input("Enter the file types you'd like to summarize (comma-separated)", value=programming_language.lower()).split(',')
         exclude_folders = st.text_area('Folders to exclude (comma separated)', value='.git,.DS_Store,Pods').split(',')
 
         # Clean up the exclude_folders list
@@ -44,12 +46,11 @@ class App:
         st.divider()
 
         analysis_results = []
-        if st.button('Generate'):
-            for item in files:
-                file_path = os.path.join(base_path, item)
-                analysis_result = sda.analyze_file(file_path)
-                analysis_results.append(analysis_result)
-            st.session_state.analysis_results = analysis_results
+        for item in files:
+            file_path = os.path.join(base_path, item)
+            analysis_result = sda.analyze_file(file_path)
+            analysis_results.append(analysis_result)
+        st.session_state.analysis_results = analysis_results
 
         if 'analysis_results' in st.session_state:
             analysis_results = st.session_state.analysis_results
@@ -60,7 +61,7 @@ class App:
                 selected_file_details = next(item for item in analysis_results if item["file"] == file_picker)
                 if st.button('Generate Summary'):
                     summary = f"File: {fm.relative_file_path(base_path=base_path, file_path=selected_file_details.get('file', 'Unknown file'))}\n\n"
-                    summary += llm_runner.generate_code_summary(llm, "Swift", base_path, selected_file_details)
+                    summary += llm_runner.generate_code_summary(llm, programming_language, base_path, selected_file_details)
                     # Count the number of words in the summary
                     word_count = len(summary.split())
                     print(f"Number of words in summary: {word_count}")
@@ -77,9 +78,10 @@ class App:
                         st.code(summary, language='markdown')
 
             vector_db_path = Path(f"{base_path}/rag/")
-            vector_db_path.mkdir(parents=True, exist_ok=True)
-            rag = RAG(vector_db_path=vector_db_path, use_openai_embeddings=False)
             if st.button('Generate RAG Data'):
+                fm.delete_folder(vector_db_path)
+                vector_db_path.mkdir(parents=True, exist_ok=True)
+                rag = RAG(vector_db_path=vector_db_path, embedding_type=embedding_type)
                 for item in analysis_results:
                     file_path = item["file"]
                     # Change the file extension to .md and save under "documentation" folder
@@ -89,7 +91,7 @@ class App:
                     if not md_file_path.exists():
                         # Generate the summary if the file does not exist
                         summary = f"File: {fm.relative_file_path(base_path=base_path, file_path=item.get('file', 'Unknown file'))}\n\n"
-                        summary += llm_runner.generate_code_summary(llm, "Swift", base_path, item)
+                        summary += llm_runner.generate_code_summary(llm, programming_language, base_path, item)
 
                         # Create necessary directories if they don't exist
                         md_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,22 +104,36 @@ class App:
                         st.info(f"Summary already exists for {md_file_path}")
                     # Create embeddings and store them in the vector database
                     rag.create_embeddings_and_store(md_file_path)
-            query = st.text_input("What would you like to know?")
-            if st.button('Ask'):
-                results = rag.retrieve_embeddings(query, n=10)
-                # Combine the retrieved results into a context for the LLM
-                context = "\n\n".join([result.page_content for result in results])  # Access page_content attribute
+            threshold = st.slider("Threshold Score", min_value=0.01, max_value=0.3, value=0.15)
+            if os.path.exists(vector_db_path):
+                query = st.text_input("What would you like to know?")
+                if st.button('Ask'):
+                    rag = RAG(vector_db_path=vector_db_path, embedding_type=embedding_type)
+                    results = rag.retrieve_embeddings(query, n=10, threshold=threshold)
+                    # Combine the retrieved results into a context for the LLM
+                    context = "\n\n".join([result.page_content for result in results])  # Access page_content attribute
 
-                # Use the context to generate the final answer
-                prompt_template = PromptTemplate(
-                    input_variables=["query", "context"],
-                    template="Answer the question based on the following context:\n\n{context}\n\nQuestion: {query}\n\nAnswer:"
-                )
+                    # Use the context to generate the final answer
+                    chat_prompt = f"""
+                        You are a coding assistant specialized in answering questions about an iOS app project using the {programming_language} programming language. Bellow are the context and question.
+                        
+                        <context>
+                        {context}
+                        </context>
+                        
+                        <question>
+                        {query}
+                        </question>
+                        
+                        Based on the context you were given, please answer the question."""
 
-                chain = LLMChain(llm=llm, prompt=prompt_template, output_key="answer")
-                answer = chain.run(query=query, context=context)
-
-                st.write(answer)
+                    result = llm.invoke(chat_prompt)
+                    summary = ""
+                    if isinstance(result, str):
+                        summary = result
+                    else:
+                        summary = result.content
+                    st.write(summary)
 
 if __name__ == "__main__":
     load_dotenv()
