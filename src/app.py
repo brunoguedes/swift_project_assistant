@@ -106,34 +106,47 @@ class App:
                     rag.create_embeddings_and_store(md_file_path)
             threshold = st.slider("Threshold Score", min_value=0.01, max_value=0.3, value=0.15)
             if os.path.exists(vector_db_path):
-                query = st.text_input("What would you like to know?")
-                if st.button('Ask'):
-                    rag = RAG(vector_db_path=vector_db_path, embedding_type=embedding_type)
-                    results = rag.retrieve_embeddings(query, n=10, threshold=threshold)
-                    # Combine the retrieved results into a context for the LLM
-                    context = "\n\n".join([result.page_content for result in results])  # Access page_content attribute
+                # Initialize chat history
+                if "messages" not in st.session_state:
+                    st.session_state.messages = []
 
-                    # Use the context to generate the final answer
+                # Display chat messages from history on rerun
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+
+                # React to user input
+                if prompt := st.chat_input("What would you like to know?"):
+                    # Display user message in chat message container
+                    st.chat_message("user").markdown(prompt)
+                    # Add user message to chat history
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+
+                    # Generate assistant response
+                    rag = RAG(vector_db_path=vector_db_path, embedding_type=embedding_type)
+                    results = rag.retrieve_embeddings(prompt, n=10, threshold=threshold)
+                    context = "\n\n".join([result.page_content for result in results])
                     chat_prompt = f"""
-                        You are a coding assistant specialized in answering questions about an iOS app project using the {programming_language} programming language. Bellow are the context and question.
+                        You are a coding assistant specialized in answering questions about an iOS app project using the {programming_language} programming language. Below are the context and question.
                         
                         <context>
                         {context}
                         </context>
                         
                         <question>
-                        {query}
+                        {prompt}
                         </question>
                         
-                        Based on the context you were given, please answer the question."""
+                        Based ONLY on the context you were given, please answer the question."""
 
                     result = llm.invoke(chat_prompt)
-                    summary = ""
-                    if isinstance(result, str):
-                        summary = result
-                    else:
-                        summary = result.content
-                    st.write(summary)
+                    response = result.content if hasattr(result, 'content') else str(result)
+
+                    # Display assistant response in chat message container
+                    with st.chat_message("assistant"):
+                        st.markdown(response)
+                    # Add assistant response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     load_dotenv()
