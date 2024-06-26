@@ -56,6 +56,11 @@ class LLMs:
                 "max_context_length": 100000,
                 "is_local": False
             },
+            "Claude3 Sonnet 3.5": {
+                "llm": lambda: ChatAnthropic(model_name="claude-3-5-sonnet-20240620", temperature=temperature),
+                "max_context_length": 200000,
+                "is_local": False
+            },
             "llama3-70b Groq": {
                 "llm": lambda: ChatGroq(model="llama3-70b-8192", temperature=temperature),
                 "max_context_length": 8192,
