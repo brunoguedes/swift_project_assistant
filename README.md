@@ -5,11 +5,17 @@ Swift Project Assistant is a tool designed to help developers analyze, summarize
 ## Features
 
 - **File Analysis**: Automatically analyzes Swift files in a specified project directory.
-- **Code Summarization**: Generates comprehensive summaries of Swift code files, including classes, structs, methods, and dependencies.
+- **Code Summarization**: Generates comprehensive summaries of Swift code files, including classes, structs, methods, and dependencies.[^1]
+  ![](./screenshots/GenerateDocumentationForFile.png)
 - **Interactive Q&A**: Uses a RAG system to answer questions about the project based on generated documentation.
+  ![](./screenshots/AskQuestionsAboutTheCode.png)
 - **Flexible LLM Integration**: Supports multiple language models, including local and remote options.
+  ![](./screenshots/SelectLLM.png)
 - **Folder Exclusion**: Option to exclude specific folders from analysis.
 - **Project Structure Visualization**: Displays the folder structure of the analyzed project.
+  ![](./screenshots/FolderStructure.png)
+
+[^1]: Screenshots generated using the [BoxOfficeBuzz](https://github.com/brunoguedes/BoxOfficeBuzz) project.
 
 ## Installation
 

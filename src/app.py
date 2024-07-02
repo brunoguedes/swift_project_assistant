@@ -22,21 +22,33 @@ class App:
         embedding_type = "openai"
         st.title(body=f"{programming_language} Project Assistant")
 
+        # LLM Type Toggle
+        llm_type = st.radio(
+            "Choose LLM type:",
+            ("Local", "Remote"),
+            horizontal=True,
+        )
+
         # LLM Picker
         llms = LLMs()
-        chosen_llm = st.selectbox(
-            "Please select the model you'd like to use:",
-            llms.get_available_llms(model_type=None if is_local else 'remote'),
-            index=0,
-        )
-        llm = llms.get_llm(chosen_llm)
+        available_llms = llms.get_available_llms(model_type='local' if llm_type == "Local" else 'remote')
+        
+        if not available_llms:
+            st.warning(f"No {llm_type.lower()} LLMs available. Please check your configuration.")
+        else:
+            chosen_llm = st.selectbox(
+                f"Please select the {llm_type.lower()} model you'd like to use:",
+                available_llms,
+                index=0,
+            )
+            llm = llms.get_llm(chosen_llm)
 
         file_types = st.text_input("Enter the file types you'd like to summarize (comma-separated)", value=programming_language.lower()).split(',')
         exclude_folders = st.text_area('Folders to exclude (comma separated)', value='.git,.DS_Store,Pods').split(',')
 
         # Clean up the exclude_folders list
         exclude_folders = [folder.strip() for folder in exclude_folders if folder.strip()]
-        base_path = st.text_input('Enter the folder you want to generate the Summaries', value='../SpaceX')
+        base_path = st.text_input('Enter the folder you want to generate the Summaries', value='../BoxOfficeBuzz')
 
         st.subheader('Folder Structure:')
         fm = FilesManager()
