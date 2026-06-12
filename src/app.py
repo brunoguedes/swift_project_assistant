@@ -8,10 +8,6 @@ from bclg_apps.llms import LLMs
 from bclg_apps.rag import RAG
 import swift_dependency_analysis as sda
 import llm_runner as llm_runner
-import json
-
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 
 class App:
 
