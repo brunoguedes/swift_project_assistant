@@ -28,6 +28,7 @@ from swift_project_assistant.analyzer import (
     referenced_types,
     run_sourcekitten,
 )
+from swift_project_assistant.summary import get_summary
 
 DEFAULT_EXCLUDES = {".git", ".build", "Pods", "Carthage", "DerivedData", ".swiftpm"}
 
@@ -176,6 +177,20 @@ def get_symbol_source(file_path: str, symbol: str) -> str:
     if result is None:
         return f"Symbol '{symbol}' not found in {file_path}. Use get_file_outline to see available symbols."
     return result
+
+
+@mcp.tool()
+def get_file_summary(file_path: str, refresh: bool = False) -> str:
+    """Get a markdown summary of a Swift file, cached inside the file itself.
+
+    The summary (imports, types, member signatures) is stored as a comment
+    block at the top of the Swift file with a generation timestamp. If that
+    timestamp is equal to or later than the file's last modification, the
+    cached summary is returned instantly without re-running SourceKitten.
+    Otherwise the summary is regenerated and the comment block in the file is
+    updated (this writes to the file). Set refresh=true to force regeneration.
+    """
+    return get_summary(_resolve_file(file_path), refresh=refresh)
 
 
 @mcp.tool()

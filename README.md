@@ -22,7 +22,30 @@ brew install sourcekitten
 | `get_file_outline` | One file's structure: imports, types, property/method signatures, enum cases — no bodies (~10x fewer tokens than the source) |
 | `find_symbol` | Locate where a type, method, property, or function is declared |
 | `get_symbol_source` | Extract the source of a single type or method (e.g. `MovieViewModel.fetchMovies`) instead of the whole file |
+| `get_file_summary` | Markdown summary of a file, **cached inside the file itself** as a comment block with a generation timestamp — returned instantly (no SourceKitten run) while the file is unmodified |
 | `get_file_dependencies` | A file's imports, declared types, and external conformances |
+
+### In-file summary cache
+
+`get_file_summary` writes its result to the top of the Swift file:
+
+```swift
+/* swift-project-assistant:summary
+Generated: 2026-06-12T22:29:27.358654+00:00
+
+# MovieViewModel.swift
+
+**Imports:** Foundation, SwiftUI
+
+## class MovieViewModel: ObservableObject
+
+- `func fetchMovies(for category: Category) -> [Movie]`
+*/
+import Foundation
+...
+```
+
+If the `Generated` timestamp is equal to or later than the file's modification time, the cached summary is returned without re-running SourceKitten (the file's mtime is pinned to the generation time, so writing the cache doesn't invalidate it). Editing the file makes the cache stale, and the next call regenerates and rewrites the block. Pass `refresh=true` to force regeneration.
 
 ### Install & run
 
