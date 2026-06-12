@@ -1,15 +1,60 @@
 # Swift Project Assistant
 
-Swift Project Assistant is a tool designed to help developers analyze, summarize, and interact with Swift projects. It leverages advanced language models and RAG (Retrieval-Augmented Generation) techniques to provide insightful summaries of Swift code files and answer questions about the project.
+Swift Project Assistant is a tool designed to help developers analyze, summarize, and interact with Swift projects. It ships two things:
 
-## Features
+1. **An MCP server** that gives AI agents (Claude Code, Claude Desktop, or any MCP client) structural understanding of a Swift codebase — outlines, symbol search, targeted source extraction — so they can answer questions and make changes **without reading whole files**, saving a large amount of tokens.
+2. **A Streamlit app** that generates documentation for Swift files with the LLM of your choice and answers questions about the project using RAG (Retrieval-Augmented Generation).
 
-- **File Analysis**: Automatically analyzes Swift files in a specified project directory.
+## MCP Server
+
+The MCP server uses a pure-Python Swift parser (no Xcode or SourceKitten required), so it works on macOS, Linux, and inside CI/agent sandboxes.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `list_swift_files` | Project layout: every Swift file with line counts |
+| `get_project_map` | Every type declared in the project (kind, name, conformances), per file |
+| `get_file_outline` | One file's structure: imports, types, property/method signatures, enum cases — no bodies (~10x fewer tokens than the source) |
+| `find_symbol` | Locate where a type, method, property, or function is declared |
+| `get_symbol_source` | Extract the source of a single type or method (e.g. `MovieViewModel.fetchMovies`) instead of the whole file |
+| `get_file_dependencies` | A file's imports, declared types, and external conformances |
+
+### Install & run
+
+```bash
+poetry install
+```
+
+Add it to **Claude Code**:
+
+```bash
+claude mcp add swift-project-assistant -- poetry run --directory /path/to/swift_project_assistant swift-project-mcp
+```
+
+Or to **Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "swift-project-assistant": {
+      "command": "poetry",
+      "args": ["run", "--directory", "/path/to/swift_project_assistant", "swift-project-mcp"]
+    }
+  }
+}
+```
+
+Then ask your agent things like *"What view models are in ~/Projects/BoxOfficeBuzz and what do they depend on?"* — it will use the project map and outlines instead of reading every file.
+
+## Streamlit App
+
+- **File Analysis**: Automatically analyzes Swift files in a specified project directory (uses [SourceKitten](https://github.com/jpsim/SourceKitten) — macOS).
 - **Code Summarization**: Generates comprehensive summaries of Swift code files, including classes, structs, methods, and dependencies.[^1]
   ![](./screenshots/GenerateDocumentationForFile.png)
 - **Interactive Q&A**: Uses a RAG system to answer questions about the project based on generated documentation.
   ![](./screenshots/AskQuestionsAboutTheCode.png)
-- **Flexible LLM Integration**: Supports multiple language models, including local and remote options.
+- **Flexible LLM Integration**: Supports current local and remote models — Claude Opus 4.8 / Sonnet 4.6 / Haiku 4.5, GPT-5 / GPT-4.1, Groq Llama 3.3, and local models via Ollama (Llama 3.3, Qwen 2.5 Coder, Codestral, Mistral).
   ![](./screenshots/SelectLLM.png)
 - **Folder Exclusion**: Option to exclude specific folders from analysis.
 - **Project Structure Visualization**: Displays the folder structure of the analyzed project.
@@ -17,23 +62,13 @@ Swift Project Assistant is a tool designed to help developers analyze, summarize
 
 [^1]: Screenshots generated using the [BoxOfficeBuzz](https://github.com/brunoguedes/BoxOfficeBuzz) project.
 
-## Installation
+### Usage
 
-1. Ensure you have Python 3.12 installed.
-2. Clone this repository.
-3. Install the required dependencies:
-
-```
-poetry install
-```
-
-## Usage
-
-1. Set up your environment variables in a `.env` file.
+1. Copy `.env_example` to `.env` and fill in the API keys you plan to use.
 2. Run the Streamlit app:
 
-```
-streamlit run src/app.py
+```bash
+poetry run streamlit run src/app.py
 ```
 
 3. In the web interface:
@@ -45,15 +80,20 @@ streamlit run src/app.py
 
 ## Requirements
 
-- Python 3.12
-- Poetry for dependency management
-- Various Python libraries (see `pyproject.toml` for full list)
+- Python 3.11+
+- [Poetry](https://python-poetry.org) for dependency management
+- For the Streamlit app's file analysis: macOS with SourceKitten (`brew install sourcekitten`)
+- Optional: local HuggingFace embeddings via `poetry install --extras huggingface`
 
 ## Project Structure
 
-- `app.py`: Main Streamlit application
-- `llm_runner.py`: Handles LLM interactions for code summarization
-- `swift_dependency_analysis.py`: Analyzes Swift files for dependencies and structure
+- `src/swift_project_assistant/` — installable package
+  - `parser.py` — pure-Python Swift outline parser
+  - `mcp_server.py` — the MCP server (`swift-project-mcp` entry point)
+- `src/app.py` — Streamlit application
+- `src/llm_runner.py` — LLM interactions for code summarization
+- `src/swift_dependency_analysis.py` — SourceKitten-based analysis used by the Streamlit app
+- `tests/` — parser test suite (`poetry run pytest`)
 
 ## Contributing
 

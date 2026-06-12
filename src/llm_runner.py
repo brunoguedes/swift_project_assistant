@@ -1,6 +1,3 @@
-import json
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 from bclg_apps.files_manager import FilesManager
 
 def generate_code_summary(llm, programming_language, base_path, file_analysis):
