@@ -97,6 +97,34 @@ def test_cache_lifecycle(tmp_path, monkeypatch):
     assert calls["count"] == 3
 
 
+def test_llm_overview_included(tmp_path, monkeypatch):
+    monkeypatch.setattr(summary, "run_sourcekitten", lambda p: STRUCTURE)
+    monkeypatch.setattr(summary, "generate_overview", lambda md, src: "Fetches movies for the UI.")
+    path = write_sample(tmp_path)
+
+    md = summary.get_summary(path)
+    assert "## Overview\n\nFetches movies for the UI." in md
+    # The overview sits between the title and the structural sections.
+    assert md.index("# MovieViewModel.swift") < md.index("## Overview") < md.index("## class MovieViewModel")
+    # Cached read returns the same enriched summary.
+    assert summary.get_summary(path) == md
+
+
+def test_llm_failure_falls_back_to_structural(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(summary, "run_sourcekitten", lambda p: STRUCTURE)
+
+    def boom(md, src):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(summary, "generate_overview", boom)
+    path = write_sample(tmp_path)
+
+    md = summary.get_summary(path)
+    assert "## Overview" not in md
+    assert "## class MovieViewModel" in md
+    assert "ollama unreachable" in capsys.readouterr().err
+
+
 def test_written_file_mtime_matches_generated(tmp_path, monkeypatch):
     monkeypatch.setattr(summary, "run_sourcekitten", lambda p: STRUCTURE)
     path = write_sample(tmp_path)

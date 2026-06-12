@@ -47,6 +47,18 @@ import Foundation
 
 If the `Generated` timestamp is equal to or later than the file's modification time, the cached summary is returned without re-running SourceKitten (the file's mtime is pinned to the generation time, so writing the cache doesn't invalidate it). Editing the file makes the cache stale, and the next call regenerates and rewrites the block. Pass `refresh=true` to force regeneration.
 
+### LLM prose overviews (optional)
+
+Set `SUMMARY_LLM` (in the MCP server's environment or a `.env` next to the project) to add an LLM-written `## Overview` section to regenerated summaries:
+
+| Value | Backend | Cost |
+|---|---|---|
+| `ollama` or `ollama:codestral` | Local [Ollama](https://ollama.com) (default model `qwen2.5-coder`) | Free, fully local |
+| `claude-cli` or `claude-cli:sonnet` | [Claude Code](https://claude.com/claude-code) headless mode (`claude -p`, default model `haiku`) | Your Claude Pro/Max **subscription** — no API key or API billing |
+| `none` / unset | — | Structural summaries only |
+
+Because overviews are cached in the file, the LLM runs once per file edit — not per question. If the backend is unreachable, summaries gracefully fall back to structural-only. After enabling `SUMMARY_LLM`, call `get_file_summary` with `refresh=true` to enrich already-cached files.
+
 ### Install & run
 
 ```bash

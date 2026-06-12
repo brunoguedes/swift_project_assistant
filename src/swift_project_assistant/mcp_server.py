@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from swift_project_assistant.analyzer import (
@@ -189,6 +190,10 @@ def get_file_summary(file_path: str, refresh: bool = False) -> str:
     cached summary is returned instantly without re-running SourceKitten.
     Otherwise the summary is regenerated and the comment block in the file is
     updated (this writes to the file). Set refresh=true to force regeneration.
+
+    If the server is configured with SUMMARY_LLM (ollama[:model] or
+    claude-cli[:model]), regenerated summaries also include an LLM-written
+    prose Overview section.
     """
     return get_summary(_resolve_file(file_path), refresh=refresh)
 
@@ -222,6 +227,7 @@ def get_file_dependencies(file_path: str) -> str:
 
 
 def main() -> None:
+    load_dotenv()  # pick up SUMMARY_LLM etc. from a .env in the working directory
     mcp.run()
 
 

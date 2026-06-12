@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from swift_project_assistant.analyzer import (
     analyze_structure,
     run_sourcekitten,
 )
+from swift_project_assistant.llm import generate_overview
 
 BLOCK_START = "/* swift-project-assistant:summary"
 BLOCK_END = "*/"
@@ -131,14 +133,32 @@ def cached_summary(path: Path) -> str | None:
     return None
 
 
+def _insert_overview(markdown: str, overview: str) -> str:
+    head, _, rest = markdown.partition("\n\n")
+    return f"{head}\n\n## Overview\n\n{overview.strip()}\n\n{rest}"
+
+
 def update_summary(path: Path) -> str:
-    """Regenerate the summary via SourceKitten and write it into the file."""
+    """Regenerate the summary via SourceKitten and write it into the file.
+
+    When SUMMARY_LLM is configured, an LLM-written prose overview is added to
+    the structural summary; LLM failures are logged and skipped so the
+    structural summary always succeeds.
+    """
     structure = run_sourcekitten(str(path))
     source_bytes = path.read_bytes()
     analysis = analyze_structure(source_bytes, structure)
     markdown = render_markdown(analysis, path.name)
 
     body = strip_block(source_bytes.decode("utf-8", errors="replace"))
+
+    try:
+        overview = generate_overview(markdown, body)
+    except Exception as exc:  # noqa: BLE001 - any backend failure is non-fatal
+        print(f"swift-project-assistant: LLM overview skipped: {exc}", file=sys.stderr)
+        overview = None
+    if overview:
+        markdown = _insert_overview(markdown, overview)
     generated = datetime.now(timezone.utc)
     path.write_text(build_block(markdown, generated) + body, encoding="utf-8")
 
