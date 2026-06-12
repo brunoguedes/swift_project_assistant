@@ -7,7 +7,11 @@ Swift Project Assistant is a tool designed to help developers analyze, summarize
 
 ## MCP Server
 
-The MCP server uses a pure-Python Swift parser (no Xcode or SourceKitten required), so it works on macOS, Linux, and inside CI/agent sandboxes.
+The MCP server is powered by [SourceKitten](https://github.com/jpsim/SourceKitten) — the Swift compiler's own tooling — so outlines, type names, and method signatures (including parameter labels like `fetchMovies(for:)`) are compiler-accurate. It's designed to run on your development machine:
+
+```bash
+brew install sourcekitten
+```
 
 ### Tools
 
@@ -82,13 +86,13 @@ poetry run streamlit run src/app.py
 
 - Python 3.11+
 - [Poetry](https://python-poetry.org) for dependency management
-- For the Streamlit app's file analysis: macOS with SourceKitten (`brew install sourcekitten`)
+- [SourceKitten](https://github.com/jpsim/SourceKitten) (`brew install sourcekitten`) — used by both the MCP server and the Streamlit app's file analysis
 - Optional: local HuggingFace embeddings via `poetry install --extras huggingface`
 
 ## Project Structure
 
 - `src/swift_project_assistant/` — installable package
-  - `parser.py` — pure-Python Swift outline parser
+  - `analyzer.py` — SourceKitten-backed structure analysis
   - `mcp_server.py` — the MCP server (`swift-project-mcp` entry point)
 - `src/app.py` — Streamlit application
 - `src/llm_runner.py` — LLM interactions for code summarization

@@ -4,6 +4,10 @@ AI agents use these tools to understand a Swift codebase structurally —
 project layout, type outlines, symbol locations — and to pull in only the
 specific source they need, instead of reading whole files into context.
 
+Analysis is powered by SourceKitten (the Swift compiler's tooling library),
+so it must run on a machine with SourceKitten installed:
+`brew install sourcekitten`.
+
 Run with:  swift-project-mcp  (stdio transport)
 """
 
@@ -15,10 +19,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from swift_project_assistant.parser import (
+from swift_project_assistant.analyzer import (
+    FileAnalysis,
+    analyze_file,
+    analyze_structure,
     find_symbol_source,
     outline_to_dict,
-    parse_source,
+    referenced_types,
+    run_sourcekitten,
 )
 
 DEFAULT_EXCLUDES = {".git", ".build", "Pods", "Carthage", "DerivedData", ".swiftpm"}
@@ -38,11 +46,15 @@ def _swift_files(project_path: str, exclude_folders: list[str] | None = None) ->
     return sorted(files)
 
 
-def _read(file_path: str) -> str:
+def _resolve_file(file_path: str) -> Path:
     path = Path(file_path).expanduser().resolve()
     if not path.is_file():
         raise ValueError(f"Not a file: {file_path}")
-    return path.read_text(encoding="utf-8")
+    return path
+
+
+def _analyze(file_path: str) -> FileAnalysis:
+    return analyze_file(str(_resolve_file(file_path)))
 
 
 @mcp.tool()
@@ -58,8 +70,8 @@ def list_swift_files(project_path: str, exclude_folders: list[str] | None = None
     entries = []
     for f in files:
         try:
-            lines = f.read_text(encoding="utf-8").count("\n") + 1
-        except (OSError, UnicodeDecodeError):
+            lines = f.read_bytes().count(b"\n") + 1
+        except OSError:
             lines = 0
         entries.append({"path": str(f.relative_to(root)), "lines": lines})
     return json.dumps({"root": str(root), "file_count": len(entries), "files": entries}, indent=1)
@@ -75,11 +87,12 @@ def get_project_map(project_path: str, exclude_folders: list[str] | None = None)
     get_file_outline or get_symbol_source afterwards to drill into specifics.
     """
     root = Path(project_path).expanduser().resolve()
-    project: dict[str, list[dict]] = {}
+    project: dict[str, dict] = {}
     for f in _swift_files(project_path, exclude_folders):
         try:
-            outline = parse_source(f.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
+            analysis = analyze_file(str(f))
+        except (OSError, RuntimeError) as exc:
+            project[str(f.relative_to(root))] = {"error": str(exc)}
             continue
         decls = []
 
@@ -91,11 +104,11 @@ def get_project_map(project_path: str, exclude_folders: list[str] | None = None)
                 decls.append(entry)
                 collect(t.nested, prefix + t.name + ".")
 
-        collect(outline.types)
-        if decls or outline.functions:
+        collect(analysis.types)
+        if decls or analysis.functions:
             entry: dict = {"types": decls}
-            if outline.functions:
-                entry["functions"] = [m.name for m in outline.functions]
+            if analysis.functions:
+                entry["functions"] = [m.name for m in analysis.functions]
             project[str(f.relative_to(root))] = entry
     return json.dumps(project, indent=1)
 
@@ -108,8 +121,7 @@ def get_file_outline(file_path: str) -> str:
     imports, types, conformances, property and method signatures, enum cases,
     and nested types. Roughly 10x fewer tokens than the raw source.
     """
-    source = _read(file_path)
-    return json.dumps(outline_to_dict(source, parse_source(source)), indent=1)
+    return json.dumps(outline_to_dict(_analyze(file_path)), indent=1)
 
 
 @mcp.tool()
@@ -117,24 +129,23 @@ def find_symbol(project_path: str, symbol: str, exclude_folders: list[str] | Non
     """Find where a type, function, property, or method is declared in a project.
 
     Call this when you know a symbol's name (e.g. "MovieViewModel" or
-    "fetchDetails") but not which file defines it. Returns matching
+    "fetchMovies") but not which file defines it. Returns matching
     declarations with file path and line number.
     """
     root = Path(project_path).expanduser().resolve()
     matches = []
     for f in _swift_files(project_path, exclude_folders):
         try:
-            source = f.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            analysis = analyze_file(str(f))
+        except (OSError, RuntimeError):
             continue
-        outline = parse_source(source)
         rel = str(f.relative_to(root))
 
         def walk(types, prefix=""):
             for t in types:
                 if t.name == symbol:
                     matches.append(
-                        {"file": rel, "line": source.count("\n", 0, t.start) + 1,
+                        {"file": rel, "line": analysis.line_of(t.offset),
                          "kind": t.kind, "name": prefix + t.name}
                     )
                 for m in t.members:
@@ -145,8 +156,8 @@ def find_symbol(project_path: str, symbol: str, exclude_folders: list[str] | Non
                         )
                 walk(t.nested, prefix + t.name + ".")
 
-        walk(outline.types)
-        for m in outline.functions + outline.globals:
+        walk(analysis.types)
+        for m in analysis.functions + analysis.globals:
             if m.name == symbol:
                 matches.append({"file": rel, "kind": m.kind, "name": m.name, "declaration": m.declaration})
     return json.dumps({"symbol": symbol, "matches": matches}, indent=1)
@@ -161,8 +172,7 @@ def get_symbol_source(file_path: str, symbol: str) -> str:
     a qualified member ("MovieViewModel.fetchMovies"), or a top-level function
     name. Combine with find_symbol to locate the file first.
     """
-    source = _read(file_path)
-    result = find_symbol_source(source, symbol)
+    result = find_symbol_source(_analyze(file_path), symbol)
     if result is None:
         return f"Symbol '{symbol}' not found in {file_path}. Use get_file_outline to see available symbols."
     return result
@@ -175,8 +185,9 @@ def get_file_dependencies(file_path: str) -> str:
     Call this to understand what a file depends on before changing it —
     which modules it imports and which types declared elsewhere it uses.
     """
-    source = _read(file_path)
-    outline = parse_source(source)
+    path = _resolve_file(file_path)
+    structure = run_sourcekitten(str(path))
+    analysis = analyze_structure(path.read_bytes(), structure)
     declared: set[str] = set()
 
     def collect(types):
@@ -184,20 +195,12 @@ def get_file_dependencies(file_path: str) -> str:
             declared.add(t.name)
             collect(t.nested)
 
-    collect(outline.types)
-    inherited: set[str] = set()
-
-    def collect_inherits(types):
-        for t in types:
-            inherited.update(i.split("<")[0].strip() for i in t.inherits)
-            collect_inherits(t.nested)
-
-    collect_inherits(outline.types)
+    collect(analysis.types)
     return json.dumps(
         {
-            "imports": outline.imports,
+            "imports": analysis.imports,
             "declares": sorted(declared),
-            "inherits_or_conforms_to": sorted(inherited - declared),
+            "references": referenced_types(structure, declared),
         },
         indent=1,
     )
