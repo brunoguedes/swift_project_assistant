@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,15 +24,19 @@ from mcp.server.fastmcp import FastMCP
 
 from swift_project_assistant.analyzer import (
     FileAnalysis,
+    TypeDecl,
     analyze_file,
     analyze_structure,
+    extract_doc_comments,
     find_symbol_source,
+    format_type_interface,
     outline_to_dict,
     public_interface_to_dict,
+    referenced_type_names_in_text,
     referenced_types,
     run_sourcekitten,
 )
-from swift_project_assistant.summary import get_summary
+from swift_project_assistant.summary import extract_block, get_summary
 
 DEFAULT_EXCLUDES = {".git", ".build", "Pods", "Carthage", "DerivedData", ".swiftpm"}
 
@@ -286,6 +292,305 @@ def get_file_dependencies(file_path: str) -> str:
         },
         indent=1,
     )
+
+
+@mcp.tool()
+def get_doc_comments(file_path: str) -> str:
+    """Get the authored doc comments (/// and /** */) for a file's declarations.
+
+    Returns a map of qualified name (e.g. "MovieViewModel.fetchMovies") to the
+    documentation written above it. This is the highest-signal, lowest-token
+    description of a file's intent — pair it with get_public_interface to get
+    "the contract plus why it exists". Undocumented declarations are omitted.
+    """
+    return json.dumps(extract_doc_comments(_analyze(file_path)), indent=1)
+
+
+@mcp.tool()
+def find_references(project_path: str, symbol: str, exclude_folders: list[str] | None = None) -> str:
+    """Find every place a name is used across a project (call sites, usages).
+
+    Complements find_symbol (which finds where things are *declared*): this
+    finds where they are *used*. Returns each hit as file + line number + the
+    trimmed source line, so you can assess the impact of a change without
+    reading whole files. Matching is textual on the identifier (the last
+    component of `symbol`), so results may include unrelated same-named
+    symbols; it ignores any cached summary block at the top of a file.
+    """
+    root = Path(project_path).expanduser().resolve()
+    name = symbol.split(".")[-1].split("(")[0]
+    word = re.compile(rf"\b{re.escape(name)}\b")
+    cap = 400
+    refs: list[dict] = []
+    truncated = False
+    for f in _swift_files(project_path, exclude_folders):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        parsed = extract_block(text)
+        skip_until = text[: parsed[2]].count("\n") + 1 if parsed else 0
+        for i, line in enumerate(text.split("\n"), start=1):
+            if i < skip_until:
+                continue
+            if word.search(line):
+                refs.append({"file": str(f.relative_to(root)), "line": i, "text": line.strip()})
+                if len(refs) >= cap:
+                    truncated = True
+                    break
+        if truncated:
+            break
+    result = {"symbol": symbol, "identifier": name, "count": len(refs), "references": refs}
+    if truncated:
+        result["truncated"] = f"stopped at {cap} matches; narrow the search"
+    return json.dumps(result, indent=1)
+
+
+def _project_analyses(project_path: str, exclude_folders: list[str] | None) -> dict[str, FileAnalysis]:
+    """Parse every Swift file once; returns {relative_path: FileAnalysis}."""
+    root = Path(project_path).expanduser().resolve()
+    out: dict[str, FileAnalysis] = {}
+    for f in _swift_files(project_path, exclude_folders):
+        try:
+            out[str(f.relative_to(root))] = analyze_file(str(f))
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+@mcp.tool()
+def get_context_bundle(
+    project_path: str,
+    symbol: str,
+    min_access: str = "internal",
+    max_references: int = 20,
+    exclude_folders: list[str] | None = None,
+) -> str:
+    """Assemble focused context for working on a symbol: its source + contracts.
+
+    Returns the full source of `symbol` followed by the interfaces (signatures,
+    not bodies) of the project-declared types it references. This gives an LLM
+    the focal code plus just enough of its surroundings to reason and edit
+    safely — in one call, instead of many file reads. Types referenced but not
+    declared in the project (framework types) are listed by name only.
+    """
+    analyses = _project_analyses(project_path, exclude_folders)
+
+    focal_src: str | None = None
+    focal_rel = ""
+    focal_analysis: FileAnalysis | None = None
+    also_in: list[str] = []
+    for rel, a in analyses.items():
+        src = find_symbol_source(a, symbol)
+        if src is None:
+            continue
+        if focal_src is None:
+            focal_src, focal_rel, focal_analysis = src, rel, a
+        else:
+            also_in.append(rel)
+    if focal_src is None or focal_analysis is None:
+        return f"Symbol '{symbol}' not found in {project_path}. Use find_symbol or get_project_map."
+
+    # Index every declared type so references can be resolved to interfaces.
+    index: dict[str, tuple[str, TypeDecl]] = {}
+    for rel, a in analyses.items():
+        def collect(types: list[TypeDecl]) -> None:
+            for t in types:
+                index.setdefault(t.name, (rel, t))
+                collect(t.nested)
+        collect(a.types)
+
+    declared_here = {name for name in index if index[name][0] == focal_rel}
+    refs = referenced_type_names_in_text(focal_src, declared_here)
+
+    parts = [f"// ===== {symbol}  ({focal_rel}) ====="]
+    if also_in:
+        parts.append(f"// (also declared in: {', '.join(also_in)})")
+    parts.append(focal_src)
+
+    included: list[str] = []
+    external: list[str] = []
+    for name in refs:
+        if name not in index:
+            external.append(name)
+            continue
+        if len(included) >= max_references:
+            continue
+        rel, t = index[name]
+        parts.append(f"// ----- interface: {name}  ({rel}) -----\n{format_type_interface(t, min_access)}")
+        included.append(name)
+
+    footer: list[str] = []
+    if external:
+        footer.append(f"// external types (not declared in project): {', '.join(external)}")
+    overflow = [n for n in refs if n in index][max_references:]
+    if overflow:
+        footer.append(f"// {len(overflow)} more referenced types omitted (raise max_references): {', '.join(overflow)}")
+    return "\n\n".join(parts) + ("\n\n" + "\n".join(footer) if footer else "")
+
+
+@mcp.tool()
+def find_types(
+    project_path: str,
+    inherits: str | None = None,
+    kind: str | None = None,
+    exclude_folders: list[str] | None = None,
+) -> str:
+    """Find types across a project by what they conform to / subclass, or by kind.
+
+    Use this to gather the right set of files for a task in one query — e.g.
+    every `View` (inherits="View"), every `ObservableObject`, every conformer
+    of a protocol, or every `enum` (kind="enum"). `inherits` matches the type's
+    inheritance clause, which covers both superclasses and protocol
+    conformances (SourceKitten does not distinguish them). Returns file, line,
+    kind, qualified name, and the inheritance list for each match.
+    """
+    root = Path(project_path).expanduser().resolve()
+    matches: list[dict] = []
+    for rel, a in _project_analyses(project_path, exclude_folders).items():
+        def walk(types: list[TypeDecl], prefix: str = "") -> None:
+            for t in types:
+                if (kind is None or t.kind == kind) and (inherits is None or inherits in t.inherits):
+                    entry = {"file": rel, "line": a.line_of(t.offset), "kind": t.kind, "name": prefix + t.name}
+                    if t.inherits:
+                        entry["inherits"] = t.inherits
+                    matches.append(entry)
+                walk(t.nested, prefix + t.name + ".")
+        walk(a.types)
+    return json.dumps({"inherits": inherits, "kind": kind, "matches": matches}, indent=1)
+
+
+@mcp.tool()
+def get_dependents(project_path: str, type_name: str, exclude_folders: list[str] | None = None) -> str:
+    """Find which files reference a type — the reverse of get_file_dependencies.
+
+    Call this before changing or renaming a type to see the blast radius: the
+    list of files that use it (excluding the file that declares it). Returns
+    just file paths, so it's a very cheap impact check; follow up with
+    find_references for the exact lines.
+    """
+    root = Path(project_path).expanduser().resolve()
+    dependents: list[str] = []
+    for f in _swift_files(project_path, exclude_folders):
+        try:
+            structure = run_sourcekitten(str(f))
+            analysis = analyze_structure(f.read_bytes(), structure)
+        except (OSError, RuntimeError):
+            continue
+        declared: set[str] = set()
+
+        def collect(types: list[TypeDecl]) -> None:
+            for t in types:
+                declared.add(t.name)
+                collect(t.nested)
+
+        collect(analysis.types)
+        if type_name in declared:
+            continue
+        if type_name in referenced_types(structure, declared):
+            dependents.append(str(f.relative_to(root)))
+    return json.dumps({"type": type_name, "dependent_files": dependents}, indent=1)
+
+
+@mcp.tool()
+def get_outlines(paths: list[str], exclude_folders: list[str] | None = None) -> str:
+    """Get outlines for many files (or whole folders) in a single call.
+
+    The batch form of get_file_outline: pass a list of file and/or directory
+    paths and get back every file's structure keyed by path. Directories are
+    expanded to the Swift files under them. Use this to map a folder in one
+    round trip instead of one call per file.
+    """
+    result: dict[str, dict] = {}
+    for p in paths:
+        path = Path(p).expanduser().resolve()
+        if path.is_dir():
+            for f in _swift_files(str(path), exclude_folders):
+                try:
+                    result[str(f)] = outline_to_dict(analyze_file(str(f)))
+                except (OSError, RuntimeError) as exc:
+                    result[str(f)] = {"error": str(exc)}
+        elif path.is_file():
+            try:
+                result[str(path)] = outline_to_dict(analyze_file(str(path)))
+            except (OSError, RuntimeError) as exc:
+                result[str(path)] = {"error": str(exc)}
+        else:
+            result[str(path)] = {"error": "not found"}
+    return json.dumps(result, indent=1)
+
+
+@mcp.tool()
+def changed_files_context(
+    project_path: str,
+    git_ref: str = "HEAD",
+    interface_only: bool = False,
+    exclude_folders: list[str] | None = None,
+) -> str:
+    """Outline the Swift files changed versus a git ref — focused diff context.
+
+    Call this to feed an LLM only the surface of what changed (for review,
+    continuing work, or writing a PR description) instead of the whole repo.
+    Returns each changed file's outline (or its public interface when
+    interface_only=true), plus any deleted files. `git_ref` defaults to HEAD
+    (working tree vs last commit); pass a branch or commit to diff against it.
+    """
+    root = Path(project_path).expanduser().resolve()
+    proc = subprocess.run(
+        ["git", "-C", str(root), "diff", "--name-only", git_ref, "--", "*.swift"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return json.dumps({"error": f"git diff failed: {proc.stderr.strip()}"}, indent=1)
+    changed: dict[str, dict] = {}
+    deleted: list[str] = []
+    for rel in filter(None, proc.stdout.splitlines()):
+        fp = root / rel
+        if not fp.exists():
+            deleted.append(rel)
+            continue
+        try:
+            analysis = analyze_file(str(fp))
+        except (OSError, RuntimeError) as exc:
+            changed[rel] = {"error": str(exc)}
+            continue
+        changed[rel] = public_interface_to_dict(analysis) if interface_only else outline_to_dict(analysis)
+    return json.dumps({"git_ref": git_ref, "changed": changed, "deleted": deleted}, indent=1)
+
+
+@mcp.tool()
+def search_declarations(project_path: str, pattern: str, exclude_folders: list[str] | None = None) -> str:
+    """Search declaration signatures across a project with a regular expression.
+
+    Token-cheap structural discovery for when you know the shape but not the
+    name — e.g. pattern="-> \\[Workout\\]" to find functions returning
+    [Workout], or "@Published" / "async throws". Matches type headers and
+    member/function signatures. Returns file, line/qualified name, and the
+    matching declaration.
+    """
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return json.dumps({"error": f"invalid regex: {exc}"}, indent=1)
+    matches: list[dict] = []
+    for rel, a in _project_analyses(project_path, exclude_folders).items():
+        def walk(types: list[TypeDecl], prefix: str = "") -> None:
+            for t in types:
+                header = f"{t.kind} {prefix}{t.name}"
+                if t.inherits:
+                    header += ": " + ", ".join(t.inherits)
+                if regex.search(header):
+                    matches.append({"file": rel, "line": a.line_of(t.offset), "declaration": header})
+                for m in t.members:
+                    if regex.search(m.declaration):
+                        matches.append({"file": rel, "name": f"{prefix}{t.name}.{m.name}", "declaration": m.declaration})
+                walk(t.nested, prefix + t.name + ".")
+        walk(a.types)
+        for m in a.functions + a.globals:
+            if regex.search(m.declaration):
+                matches.append({"file": rel, "declaration": m.declaration})
+    return json.dumps({"pattern": pattern, "match_count": len(matches), "matches": matches}, indent=1)
 
 
 def main() -> None:

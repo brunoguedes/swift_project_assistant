@@ -15,17 +15,49 @@ brew install sourcekitten
 
 ### Tools
 
+Every tool is built to give an LLM the most context for the fewest tokens — compact outlines, just-enough interfaces, and targeted lookups instead of whole-file reads.
+
+**Orient & discover**
+
 | Tool | What it does |
 |---|---|
 | `list_swift_files` | Project layout: every Swift file with line counts |
 | `get_project_map` | Every type declared in the project (kind, name, conformances), per file |
+| `find_types` | Find types by what they conform to / subclass (`inherits="View"`) or by `kind` — assemble the right file set in one query |
+| `search_declarations` | Regex over declaration signatures project-wide (e.g. `-> [Workout]`, `@Published`) — discover by shape when you don't know the name |
+
+**Read structure & interface (no bodies)**
+
+| Tool | What it does |
+|---|---|
 | `get_file_outline` | One file's structure: imports, types, property/method signatures, enum cases — no bodies (~10x fewer tokens than the source) |
-| `get_public_interface` | Like `get_file_outline`, but filtered by access level — shows a file's intent and contract with the internals hidden (drops `private`/`fileprivate` by default; `min_access="public"` for the strict library API) |
+| `get_outlines` | The batch form of `get_file_outline`: outline many files or whole folders in one call |
+| `get_public_interface` | Like `get_file_outline`, but filtered by access level — a file's contract with the internals hidden (drops `private`/`fileprivate` by default; `min_access="public"` for the strict library API) |
+| `get_doc_comments` | The authored `///` / `/** */` docs per declaration — highest-signal intent, lowest token cost |
+| `get_file_dependencies` | A file's imports, declared types, and external conformances |
+
+**Locate & read implementation**
+
+| Tool | What it does |
+|---|---|
 | `find_symbol` | Locate where a type, method, property, or function is declared |
 | `get_symbol_source` | Extract the source of a single type or method (e.g. `MovieViewModel.fetchMovies`) from a known file |
 | `get_implementation` | Full source of a declaration by name, searched across the whole project — when you know the name but not the file |
+| `get_context_bundle` | A symbol's full source **plus the interfaces of the project types it references** — the focal code and its contracts in one call |
+
+**Impact & change**
+
+| Tool | What it does |
+|---|---|
+| `find_references` | Every place a name is used (file + line + source line) — impact analysis without reading files |
+| `get_dependents` | Which files reference a type — the reverse of `get_file_dependencies`; the blast radius of a change |
+| `changed_files_context` | Outline (or public interface) of just the Swift files changed versus a git ref — focused diff/PR context |
+
+**Summarize**
+
+| Tool | What it does |
+|---|---|
 | `get_file_summary` | Markdown summary of a file, cached so it's returned instantly (no SourceKitten run) while the file is unmodified |
-| `get_file_dependencies` | A file's imports, declared types, and external conformances |
 
 ### How a summary is generated
 

@@ -405,6 +405,114 @@ def find_symbol_source(analysis: FileAnalysis, symbol: str) -> str | None:
     return None
 
 
+_DOC_LINE_RE = re.compile(r"^\s*///\s?(.*)$")
+
+
+def _doc_above(lines: list[str], decl_line_idx: int) -> str | None:
+    """The doc comment (/// run or /** */ block) directly above a declaration."""
+    i = decl_line_idx - 1
+    # Skip attribute lines (@MainActor, @Published, …) between doc and decl.
+    while i >= 0 and lines[i].strip().startswith("@"):
+        i -= 1
+    if i < 0:
+        return None
+
+    # Block comment: /** ... */
+    if lines[i].strip().endswith("*/"):
+        block: list[str] = []
+        while i >= 0:
+            block.append(lines[i])
+            if "/**" in lines[i]:
+                break
+            i -= 1
+        else:
+            return None
+        block.reverse()
+        inner = "\n".join(block)
+        inner = inner[inner.index("/**") + 3 :]
+        inner = inner[: inner.rindex("*/")] if "*/" in inner else inner
+        cleaned = []
+        for ln in inner.splitlines():
+            s = ln.strip()
+            cleaned.append(s[1:].strip() if s.startswith("*") else s)
+        return "\n".join(cleaned).strip() or None
+
+    # Line comments: /// run
+    collected: list[str] = []
+    while i >= 0:
+        m = _DOC_LINE_RE.match(lines[i])
+        if not m:
+            break
+        collected.append(m.group(1).rstrip())
+        i -= 1
+    if not collected:
+        return None
+    collected.reverse()
+    return "\n".join(collected).strip() or None
+
+
+def extract_doc_comments(analysis: FileAnalysis) -> dict[str, str]:
+    """Map each documented declaration (qualified name) to its doc comment text.
+
+    Only declarations that actually carry a `///` or `/** */` doc comment are
+    included — undocumented ones are omitted.
+    """
+    lines = analysis.source.decode("utf-8", errors="replace").split("\n")
+    out: dict[str, str] = {}
+
+    def line_idx(offset: int) -> int:
+        return analysis.source.count(b"\n", 0, offset)  # 0-based
+
+    def add(name: str, offset: int | None) -> None:
+        if offset is None:
+            return
+        doc = _doc_above(lines, line_idx(offset))
+        if doc:
+            out[name] = doc
+
+    def walk(t: TypeDecl, prefix: str = "") -> None:
+        qn = prefix + t.name
+        add(qn, t.offset)
+        for member, item in zip(t.members, t.member_items):
+            add(f"{qn}.{member.name}", item.get(OFFSET))
+        for nested in t.nested:
+            walk(nested, qn + ".")
+
+    for t in analysis.types:
+        walk(t)
+    for item in analysis.function_items:
+        add(_base_name(item.get(NAME, "")), item.get(OFFSET))
+    return out
+
+
+def referenced_type_names_in_text(text: str, declared: set[str]) -> list[str]:
+    """Capitalized type identifiers used in a snippet, minus declared/builtin."""
+    found = set(re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", text))
+    return sorted(found - declared - _BUILTIN_TYPES)
+
+
+def format_type_interface(t: TypeDecl, min_access: str = "internal") -> str:
+    """Render one type's interface (header + visible member signatures) as text."""
+    threshold = ACCESS_ORDER.index(min_access)
+    rank = _access_rank(t.accessibility, ACCESS_ORDER.index("internal"))
+    head = f"{t.kind} {t.name}"
+    if t.inherits:
+        head += ": " + ", ".join(t.inherits)
+    body: list[str] = []
+    for m in t.members:
+        if _access_rank(m.accessibility, rank) >= threshold:
+            body.append(f"    {m.declaration}")
+    for n in t.nested:
+        if _access_rank(n.accessibility, rank) >= threshold:
+            nested_head = f"    {n.kind} {n.name}"
+            if n.inherits:
+                nested_head += ": " + ", ".join(n.inherits)
+            body.append(nested_head + " { … }")
+    if not body:
+        return head + " { … }"
+    return head + " {\n" + "\n".join(body) + "\n}"
+
+
 def referenced_types(structure: dict, declared: set[str]) -> list[str]:
     """Type identifiers referenced anywhere in the file but declared elsewhere."""
     found: set[str] = set()
