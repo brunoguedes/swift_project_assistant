@@ -7,8 +7,12 @@ JSON (same key names, byte offsets) for the sample source below.
 
 from swift_project_assistant.analyzer import (
     analyze_structure,
+    extract_doc_comments,
     find_symbol_source,
+    format_type_interface,
     outline_to_dict,
+    public_interface_to_dict,
+    referenced_type_names_in_text,
     referenced_types,
 )
 
@@ -251,3 +255,165 @@ def test_referenced_types():
     # Declared and builtin types are excluded.
     assert "MovieViewModel" not in refs
     assert "String" not in refs
+
+
+# --- access-level parsing & public-interface filtering -------------------
+
+def _acc(level: str) -> str:
+    return f"source.lang.swift.accessibility.{level}"
+
+
+# A struct with mixed access levels, a private top-level type, and a public
+# free function — enough to exercise every filtering branch.
+ACCESS_STRUCTURE = {
+    "key.substructure": [
+        {
+            "key.kind": "source.lang.swift.decl.struct",
+            "key.name": "Account",
+            "key.offset": 0,
+            "key.length": 1,
+            "key.accessibility": _acc("public"),
+            "key.substructure": [
+                {"key.kind": "source.lang.swift.decl.var.instance", "key.name": "id",
+                 "key.typename": "UUID", "key.accessibility": _acc("public")},
+                {"key.kind": "source.lang.swift.decl.var.instance", "key.name": "secret",
+                 "key.typename": "String", "key.accessibility": _acc("private")},
+                {"key.kind": "source.lang.swift.decl.var.instance", "key.name": "balance",
+                 "key.typename": "Double", "key.accessibility": _acc("internal")},
+                {"key.kind": "source.lang.swift.decl.function.method.instance",
+                 "key.name": "deposit(_:)", "key.accessibility": _acc("public")},
+                {"key.kind": "source.lang.swift.decl.function.method.instance",
+                 "key.name": "recompute()", "key.accessibility": _acc("fileprivate")},
+            ],
+        },
+        {
+            "key.kind": "source.lang.swift.decl.class",
+            "key.name": "Hidden",
+            "key.offset": 0,
+            "key.length": 1,
+            "key.accessibility": _acc("private"),
+            "key.substructure": [
+                {"key.kind": "source.lang.swift.decl.function.method.instance", "key.name": "work()"},
+            ],
+        },
+        {
+            "key.kind": "source.lang.swift.decl.function.free",
+            "key.name": "makeAccount()", "key.typename": "Account",
+            "key.accessibility": _acc("public"),
+        },
+    ]
+}
+
+
+def access_analysis():
+    return analyze_structure(b"", ACCESS_STRUCTURE)
+
+
+def test_accessibility_parsed():
+    account = access_analysis().types[0]
+    assert account.accessibility == "public"
+    accs = {m.name: m.accessibility for m in account.members}
+    assert accs["id"] == "public"
+    assert accs["secret"] == "private"
+    assert accs["balance"] == "internal"
+
+
+def test_public_interface_default_hides_private_and_fileprivate():
+    d = public_interface_to_dict(access_analysis())  # min_access="internal"
+    assert d["min_access"] == "internal"
+    # The private top-level class is dropped entirely.
+    assert [t["name"] for t in d["types"]] == ["Account"]
+    members = d["types"][0]["members"]
+    assert any("id:" in m for m in members)
+    assert any("balance:" in m for m in members)  # internal kept
+    assert all("secret" not in m for m in members)  # private hidden
+    assert all("recompute" not in m for m in members)  # fileprivate hidden
+    assert d["functions"] == ["func makeAccount() -> Account"]
+
+
+def test_public_interface_strict_public():
+    d = public_interface_to_dict(access_analysis(), min_access="public")
+    members = d["types"][0]["members"]
+    assert any("id:" in m for m in members)        # public kept
+    assert all("balance" not in m for m in members)  # internal now dropped
+    assert any("deposit" in m for m in members)
+
+
+def test_public_interface_private_keeps_everything():
+    d = public_interface_to_dict(access_analysis(), min_access="private")
+    assert {t["name"] for t in d["types"]} == {"Account", "Hidden"}
+
+
+def test_public_interface_rejects_bad_level():
+    try:
+        public_interface_to_dict(access_analysis(), min_access="secret")
+    except ValueError as exc:
+        assert "min_access" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for invalid min_access")
+
+
+def test_format_type_interface_hides_internals():
+    account = access_analysis().types[0]
+    text = format_type_interface(account)  # default min_access="internal"
+    assert text.startswith("struct Account: ") or text.startswith("struct Account {")
+    assert "id: UUID" in text
+    assert "balance: Double" in text       # internal kept
+    assert "func deposit" in text          # public method kept
+    assert "secret" not in text            # private hidden
+    assert "recompute" not in text         # fileprivate hidden
+
+
+# --- doc comment extraction ----------------------------------------------
+
+DOC_SOURCE = '''\
+/// A view model for movies.
+final class MovieVM {
+    /// Fetches the movies
+    /// from the service.
+    func fetch() {}
+    var count: Int = 0
+}
+
+/// Builds a default VM.
+func make() -> MovieVM { MovieVM() }
+'''
+
+
+def _doc_off(snippet: str) -> int:
+    return DOC_SOURCE.index(snippet)
+
+
+DOC_STRUCTURE = {
+    "key.substructure": [
+        {
+            "key.kind": "source.lang.swift.decl.class", "key.name": "MovieVM",
+            "key.offset": _doc_off("final class"), "key.length": 1,
+            "key.substructure": [
+                {"key.kind": "source.lang.swift.decl.function.method.instance",
+                 "key.name": "fetch()", "key.offset": _doc_off("func fetch"), "key.length": 1},
+                {"key.kind": "source.lang.swift.decl.var.instance", "key.name": "count",
+                 "key.typename": "Int", "key.offset": _doc_off("var count"), "key.length": 1},
+            ],
+        },
+        {"key.kind": "source.lang.swift.decl.function.free", "key.name": "make()",
+         "key.typename": "MovieVM", "key.offset": _doc_off("func make"), "key.length": 1},
+    ]
+}
+
+
+def test_extract_doc_comments():
+    a = analyze_structure(DOC_SOURCE.encode(), DOC_STRUCTURE)
+    docs = extract_doc_comments(a)
+    assert docs["MovieVM"] == "A view model for movies."
+    assert docs["MovieVM.fetch"] == "Fetches the movies\nfrom the service."  # multi-line joined
+    assert docs["make"] == "Builds a default VM."
+    assert "MovieVM.count" not in docs  # undocumented members omitted
+
+
+def test_referenced_type_names_in_text():
+    text = "func f(x: Movie, w: Workout) -> [WorkoutData] { let s = String() }"
+    refs = referenced_type_names_in_text(text, {"Movie"})
+    assert "Workout" in refs and "WorkoutData" in refs
+    assert "Movie" not in refs    # declared in this scope
+    assert "String" not in refs   # builtin

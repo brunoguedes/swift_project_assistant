@@ -135,3 +135,105 @@ def test_written_file_mtime_matches_generated(tmp_path, monkeypatch):
     mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     assert generated >= mtime  # the write itself must not invalidate the cache
     assert summary.cached_summary(path) is not None
+
+
+# --- storage modes -------------------------------------------------------
+
+
+def test_configured_storage_default_and_aliases(monkeypatch):
+    monkeypatch.delenv("SUMMARY_STORAGE", raising=False)
+    assert summary.configured_storage() is summary.SummaryStorage.SAME_FILE
+
+    for value, expected in [
+        ("off", summary.SummaryStorage.OFF),
+        ("none", summary.SummaryStorage.OFF),
+        ("same-file", summary.SummaryStorage.SAME_FILE),
+        ("inline", summary.SummaryStorage.SAME_FILE),
+        ("standalone", summary.SummaryStorage.STANDALONE),
+        ("sidecar", summary.SummaryStorage.STANDALONE),
+        ("MD", summary.SummaryStorage.STANDALONE),
+    ]:
+        monkeypatch.setenv("SUMMARY_STORAGE", value)
+        assert summary.configured_storage() is expected
+
+
+def test_configured_storage_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("SUMMARY_STORAGE", "bogus")
+    try:
+        summary.configured_storage()
+    except ValueError as exc:
+        assert "bogus" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for unknown SUMMARY_STORAGE")
+
+
+def test_storage_off_never_writes(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    def fake_sourcekitten(file_path):
+        calls["count"] += 1
+        return STRUCTURE
+
+    monkeypatch.setattr(summary, "run_sourcekitten", fake_sourcekitten)
+    monkeypatch.setenv("SUMMARY_STORAGE", "off")
+    path = write_sample(tmp_path)
+
+    md1 = summary.get_summary(path)
+    # Source file is untouched and no sidecar appears.
+    assert path.read_text(encoding="utf-8") == SOURCE
+    assert not summary.sidecar_path(path).exists()
+    # No caching: every call regenerates.
+    md2 = summary.get_summary(path)
+    assert md2 == md1
+    assert calls["count"] == 2
+
+
+def test_storage_standalone_writes_sidecar_and_caches(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    def fake_sourcekitten(file_path):
+        calls["count"] += 1
+        return STRUCTURE
+
+    monkeypatch.setattr(summary, "run_sourcekitten", fake_sourcekitten)
+    monkeypatch.setenv("SUMMARY_STORAGE", "standalone")
+    path = write_sample(tmp_path)
+    md_path = summary.sidecar_path(path)
+    assert md_path.name == "MovieViewModel.md"
+
+    # First call writes the sidecar and leaves the .swift file untouched.
+    md1 = summary.get_summary(path)
+    assert calls["count"] == 1
+    assert path.read_text(encoding="utf-8") == SOURCE
+    assert md_path.exists()
+    raw = md_path.read_text(encoding="utf-8")
+    assert raw.startswith("<!-- swift-project-assistant:summary")
+    assert "do not edit -->" in raw
+    # The returned markdown has no provenance header.
+    assert md1.startswith("# MovieViewModel.swift")
+
+    # Second call: served from the sidecar cache, SourceKitten not re-run.
+    md2 = summary.get_summary(path)
+    assert calls["count"] == 1
+    assert md2 == md1
+
+    # Editing the source (newer mtime) invalidates the sidecar.
+    future = path.stat().st_mtime + 10
+    os.utime(path, (future, future))
+    assert summary.cached_summary(path) is None
+    summary.get_summary(path)
+    assert calls["count"] == 2
+
+
+def test_storage_modes_are_independent(tmp_path, monkeypatch):
+    monkeypatch.setattr(summary, "run_sourcekitten", lambda p: STRUCTURE)
+    path = write_sample(tmp_path)
+
+    # same-file cache must not satisfy a standalone read, and vice versa.
+    monkeypatch.setenv("SUMMARY_STORAGE", "same-file")
+    summary.get_summary(path)
+    assert summary.cached_summary(path, summary.SummaryStorage.STANDALONE) is None
+
+    monkeypatch.setenv("SUMMARY_STORAGE", "standalone")
+    assert summary.get_summary(path).startswith("# MovieViewModel.swift")
+    assert summary.sidecar_path(path).exists()
