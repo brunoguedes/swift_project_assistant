@@ -117,11 +117,14 @@ def get_project_map(project_path: str, exclude_folders: list[str] | None = None)
 
 @mcp.tool()
 def get_file_outline(file_path: str) -> str:
-    """Get the structure of one Swift file without its implementation bodies.
+    """Get the structure of one Swift file as JSON with line numbers.
 
-    Call this instead of reading a file when you need to know what it declares:
-    imports, types, conformances, property and method signatures, enum cases,
-    and nested types. Roughly 10x fewer tokens than the raw source.
+    Prefer get_file_summary when you just need to understand what a file
+    contains; call this tool when you additionally need line numbers or
+    machine-readable JSON (e.g. to target a follow-up get_symbol_source
+    call). Returns imports, types, conformances, property and method
+    signatures, enum cases, and nested types — no implementation bodies.
+    Roughly 10x fewer tokens than the raw source.
     """
     return json.dumps(outline_to_dict(_analyze(file_path)), indent=1)
 
@@ -182,14 +185,21 @@ def get_symbol_source(file_path: str, symbol: str) -> str:
 
 @mcp.tool()
 def get_file_summary(file_path: str, refresh: bool = False) -> str:
-    """Get a markdown summary of a Swift file, cached inside the file itself.
+    """Get a markdown summary of a Swift file: imports, types, member signatures.
 
-    The summary (imports, types, member signatures) is stored as a comment
-    block at the top of the Swift file with a generation timestamp. If that
-    timestamp is equal to or later than the file's last modification, the
-    cached summary is returned instantly without re-running SourceKitten.
-    Otherwise the summary is regenerated and the comment block in the file is
-    updated (this writes to the file). Set refresh=true to force regeneration.
+    This is the primary tool for understanding a Swift file — call it whenever
+    you need to know what a file contains, before reaching for get_file_outline
+    or reading the source. Summaries are cached: if the cache is at or newer
+    than the file's last modification, it is returned instantly without
+    re-running SourceKitten. Otherwise the summary is regenerated. Set
+    refresh=true to force regeneration (e.g. after making significant edits).
+
+    Where the cache lives is set by the SUMMARY_STORAGE environment variable:
+      - same-file (default): a comment block at the top of the .swift file;
+        regenerating rewrites the block in place, leaving the code untouched.
+      - standalone: a sibling <name>.md file (e.g. Foo.swift -> Foo.md); the
+        .swift file is never modified.
+      - off: nothing is written; the summary is regenerated on every call.
 
     If the server is configured with SUMMARY_LLM (ollama[:model] or
     claude-cli[:model]), regenerated summaries also include an LLM-written

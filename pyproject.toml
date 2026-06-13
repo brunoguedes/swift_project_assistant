@@ -6,18 +6,26 @@ authors = [{ name = "Bruno Guedes", email = "bruno@bclgapps.com.au" }]
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<3.14"
+# Base dependencies are just what the MCP server (swift-project-mcp) needs at
+# runtime, so `uv tool install` / `pipx install` stay lean. The Streamlit chat
+# app's heavier stack lives in the `app` extra below.
 dependencies = [
-    "streamlit (>=1.58,<2.0)",
     "python-dotenv (>=1.0,<2.0)",
+    "httpx (>=0.27,<1.0)",
+    "mcp (>=1.27,<2.0)",
+]
+
+[project.optional-dependencies]
+# The Streamlit chat app (src/app.py + src/bclg_apps): install with
+# `pip install '.[app]'` or `poetry install --extras app`.
+app = [
+    "streamlit (>=1.58,<2.0)",
     "langchain-openai (>=1.3,<2.0)",
     "langchain-anthropic (>=1.4,<2.0)",
     "langchain-groq (>=1.1,<2.0)",
     "langchain-ollama (>=1.1,<2.0)",
     "langchain-chroma (>=1.1,<2.0)",
-    "mcp (>=1.27,<2.0)",
 ]
-
-[project.optional-dependencies]
 huggingface = ["langchain-huggingface (>=1.2,<2.0)"]
 
 [project.scripts]
@@ -28,6 +36,7 @@ packages = [{ include = "swift_project_assistant", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
+pyinstaller = "^6.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
