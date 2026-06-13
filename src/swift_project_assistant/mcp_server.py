@@ -26,6 +26,7 @@ from swift_project_assistant.analyzer import (
     analyze_structure,
     find_symbol_source,
     outline_to_dict,
+    public_interface_to_dict,
     referenced_types,
     run_sourcekitten,
 )
@@ -130,6 +131,29 @@ def get_file_outline(file_path: str) -> str:
 
 
 @mcp.tool()
+def get_public_interface(file_path: str, min_access: str = "internal") -> str:
+    """Get a Swift file's interface — its types and members with the internals hidden.
+
+    Like get_file_outline, but filtered by access level so you see only what a
+    declaration exposes, not how it works. Call this to understand the intent
+    and contract of a file's types without the noise of private helpers and
+    stored implementation state.
+
+    `min_access` is the least-visible level to keep:
+      - "internal" (default): drop `private` and `fileprivate` members/types;
+        keep everything the rest of the module can use. Best for app code,
+        where most declarations are unannotated (i.e. internal).
+      - "public": keep only the `public`/`open` surface — the strict
+        library-public API. (Use for frameworks; on app code it's often empty.)
+      - "fileprivate" / "private" / "package": other thresholds if needed.
+
+    For the body of one specific declaration, use get_symbol_source /
+    get_implementation instead.
+    """
+    return json.dumps(public_interface_to_dict(_analyze(file_path), min_access), indent=1)
+
+
+@mcp.tool()
 def find_symbol(project_path: str, symbol: str, exclude_folders: list[str] | None = None) -> str:
     """Find where a type, function, property, or method is declared in a project.
 
@@ -181,6 +205,34 @@ def get_symbol_source(file_path: str, symbol: str) -> str:
     if result is None:
         return f"Symbol '{symbol}' not found in {file_path}. Use get_file_outline to see available symbols."
     return result
+
+
+@mcp.tool()
+def get_implementation(project_path: str, symbol: str, exclude_folders: list[str] | None = None) -> str:
+    """Get the full source of a declaration by name, searching the whole project.
+
+    Like get_symbol_source, but you don't need to know which file the symbol
+    lives in — call this when you have a name ("MovieViewModel",
+    "MovieViewModel.fetchMovies", or a top-level function) but not its file.
+    Returns the complete source (signature and body), each match prefixed with
+    a `// <relative path>` comment. If the same name is declared in several
+    files, all are returned. Use find_symbol first if you only need locations.
+    """
+    root = Path(project_path).expanduser().resolve()
+    matches: list[str] = []
+    for f in _swift_files(project_path, exclude_folders):
+        try:
+            source = find_symbol_source(analyze_file(str(f)), symbol)
+        except (OSError, RuntimeError):
+            continue
+        if source is not None:
+            matches.append(f"// {f.relative_to(root)}\n{source}")
+    if not matches:
+        return (
+            f"Symbol '{symbol}' not found in {root}. Use find_symbol to search "
+            "for similar names, or get_project_map to see what's declared."
+        )
+    return "\n\n".join(matches)
 
 
 @mcp.tool()

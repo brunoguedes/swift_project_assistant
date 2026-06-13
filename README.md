@@ -20,8 +20,10 @@ brew install sourcekitten
 | `list_swift_files` | Project layout: every Swift file with line counts |
 | `get_project_map` | Every type declared in the project (kind, name, conformances), per file |
 | `get_file_outline` | One file's structure: imports, types, property/method signatures, enum cases — no bodies (~10x fewer tokens than the source) |
+| `get_public_interface` | Like `get_file_outline`, but filtered by access level — shows a file's intent and contract with the internals hidden (drops `private`/`fileprivate` by default; `min_access="public"` for the strict library API) |
 | `find_symbol` | Locate where a type, method, property, or function is declared |
-| `get_symbol_source` | Extract the source of a single type or method (e.g. `MovieViewModel.fetchMovies`) instead of the whole file |
+| `get_symbol_source` | Extract the source of a single type or method (e.g. `MovieViewModel.fetchMovies`) from a known file |
+| `get_implementation` | Full source of a declaration by name, searched across the whole project — when you know the name but not the file |
 | `get_file_summary` | Markdown summary of a file, cached so it's returned instantly (no SourceKitten run) while the file is unmodified |
 | `get_file_dependencies` | A file's imports, declared types, and external conformances |
 

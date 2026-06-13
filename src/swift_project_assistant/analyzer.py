@@ -24,6 +24,11 @@ TYPENAME = "key.typename"
 OFFSET = "key.offset"
 LENGTH = "key.length"
 INHERITED = "key.inheritedtypes"
+ACCESSIBILITY = "key.accessibility"
+
+# Swift access levels from least to most visible. Used to filter a file down
+# to its interface (get_public_interface).
+ACCESS_ORDER = ["private", "fileprivate", "internal", "package", "public", "open"]
 
 TYPE_KINDS = {
     "source.lang.swift.decl.class": "class",
@@ -82,6 +87,7 @@ class Member:
     kind: str  # "method" | "property" | "case" | "initializer" | "typealias" | ...
     name: str  # base name without parameter labels (for matching)
     declaration: str  # readable signature
+    accessibility: str | None = None  # "public" | "private" | ... | None if unannotated
 
 
 @dataclass
@@ -94,6 +100,7 @@ class TypeDecl:
     members: list[Member] = field(default_factory=list)
     member_items: list[dict] = field(default_factory=list)  # raw items, for source lookup
     nested: list["TypeDecl"] = field(default_factory=list)
+    accessibility: str | None = None  # "public" | "private" | ... | None if unannotated
 
 
 @dataclass
@@ -133,6 +140,12 @@ def run_sourcekitten(file_path: str) -> dict:
 
 def _base_name(name: str) -> str:
     return name.split("(")[0]
+
+
+def _access(item: dict) -> str | None:
+    """Short access level ("public", "private", …) or None if unannotated."""
+    acc = item.get(ACCESSIBILITY)
+    return acc.rsplit(".", 1)[-1] if acc else None
 
 
 def _function_signature(item: dict, keyword: str = "func") -> str:
@@ -178,31 +191,32 @@ def _parse_members(item: dict) -> tuple[list[Member], list[dict]]:
     for child in item.get(SUB, []):
         kind = child.get(KIND, "")
         name = child.get(NAME, "")
+        acc = _access(child)
         if kind in METHOD_KINDS:
-            members.append(Member("method", _base_name(name), _function_signature(child, METHOD_KINDS[kind])))
+            members.append(Member("method", _base_name(name), _function_signature(child, METHOD_KINDS[kind]), acc))
             raw_items.append(child)
         elif kind == CONSTRUCTOR_KIND:
-            members.append(Member("initializer", "init", _function_signature(child, "")))
+            members.append(Member("initializer", "init", _function_signature(child, ""), acc))
             raw_items.append(child)
         elif kind == DESTRUCTOR_KIND:
-            members.append(Member("deinitializer", "deinit", "deinit"))
+            members.append(Member("deinitializer", "deinit", "deinit", acc))
             raw_items.append(child)
         elif kind == SUBSCRIPT_KIND:
-            members.append(Member("subscript", "subscript", _function_signature(child, "")))
+            members.append(Member("subscript", "subscript", _function_signature(child, ""), acc))
             raw_items.append(child)
         elif kind in PROPERTY_KINDS:
-            members.append(Member("property", name, _property_declaration(child, PROPERTY_KINDS[kind])))
+            members.append(Member("property", name, _property_declaration(child, PROPERTY_KINDS[kind]), acc))
             raw_items.append(child)
         elif kind == ENUMCASE_KIND:
             for element in child.get(SUB, []):
                 if element.get(KIND) == ENUMELEMENT_KIND:
-                    members.append(Member("case", _base_name(element.get(NAME, "")), f"case {element.get(NAME, '')}"))
+                    members.append(Member("case", _base_name(element.get(NAME, "")), f"case {element.get(NAME, '')}", acc))
                     raw_items.append(element)
         elif kind == TYPEALIAS_KIND:
-            members.append(Member("typealias", name, f"typealias {name}"))
+            members.append(Member("typealias", name, f"typealias {name}", acc))
             raw_items.append(child)
         elif kind == ASSOCIATEDTYPE_KIND:
-            members.append(Member("associatedtype", name, f"associatedtype {name}"))
+            members.append(Member("associatedtype", name, f"associatedtype {name}", acc))
             raw_items.append(child)
     return members, raw_items
 
@@ -217,6 +231,7 @@ def _parse_type(item: dict) -> TypeDecl:
         length=item.get(LENGTH, 0),
         members=members,
         member_items=raw_items,
+        accessibility=_access(item),
     )
     decl.nested = [
         _parse_type(child) for child in item.get(SUB, []) if child.get(KIND) in TYPE_KINDS
@@ -236,10 +251,10 @@ def analyze_structure(source: bytes, structure: dict) -> FileAnalysis:
         if kind in TYPE_KINDS:
             types.append(_parse_type(item))
         elif kind == FREE_FUNCTION_KIND:
-            functions.append(Member("function", _base_name(item.get(NAME, "")), _function_signature(item)))
+            functions.append(Member("function", _base_name(item.get(NAME, "")), _function_signature(item), _access(item)))
             function_items.append(item)
         elif kind == GLOBAL_VAR_KIND:
-            globals_.append(Member("global", item.get(NAME, ""), _property_declaration(item)))
+            globals_.append(Member("global", item.get(NAME, ""), _property_declaration(item), _access(item)))
             function_items.append(item)
 
     text = source.decode("utf-8", errors="replace")
@@ -280,6 +295,62 @@ def outline_to_dict(analysis: FileAnalysis) -> dict:
         result["functions"] = [m.declaration for m in analysis.functions]
     if analysis.globals:
         result["globals"] = [m.declaration for m in analysis.globals]
+    return result
+
+
+def _access_rank(acc: str | None, fallback: int) -> int:
+    """Visibility rank of an access level; `fallback` when unannotated/unknown.
+
+    Unannotated members (e.g. enum cases) inherit their enclosing type's rank,
+    which the caller passes as `fallback`.
+    """
+    if acc is None:
+        return fallback
+    try:
+        return ACCESS_ORDER.index(acc)
+    except ValueError:
+        return fallback
+
+
+def public_interface_to_dict(analysis: FileAnalysis, min_access: str = "internal") -> dict:
+    """A file's outline filtered to its interface, hiding implementation internals.
+
+    Keeps only declarations whose access level is at least `min_access`. The
+    default "internal" drops `private`/`fileprivate` (the implementation
+    details most files want hidden) while keeping everything the rest of the
+    module can see. "public" yields the strict library-public surface.
+    """
+    if min_access not in ACCESS_ORDER:
+        raise ValueError(f"min_access must be one of {ACCESS_ORDER}, got {min_access!r}")
+    threshold = ACCESS_ORDER.index(min_access)
+    internal_rank = ACCESS_ORDER.index("internal")
+
+    def type_dict(t: TypeDecl, parent_rank: int) -> dict | None:
+        rank = _access_rank(t.accessibility, parent_rank)
+        if rank < threshold:
+            return None
+        d: dict = {"kind": t.kind, "name": t.name, "line": analysis.line_of(t.offset)}
+        if t.inherits:
+            d["inherits"] = t.inherits
+        members = [m.declaration for m in t.members if _access_rank(m.accessibility, rank) >= threshold]
+        if members:
+            d["members"] = members
+        nested = [nd for n in t.nested if (nd := type_dict(n, rank)) is not None]
+        if nested:
+            d["nested_types"] = nested
+        return d
+
+    result: dict = {
+        "min_access": min_access,
+        "imports": analysis.imports,
+        "types": [td for t in analysis.types if (td := type_dict(t, internal_rank)) is not None],
+    }
+    functions = [m.declaration for m in analysis.functions if _access_rank(m.accessibility, internal_rank) >= threshold]
+    if functions:
+        result["functions"] = functions
+    globals_ = [m.declaration for m in analysis.globals if _access_rank(m.accessibility, internal_rank) >= threshold]
+    if globals_:
+        result["globals"] = globals_
     return result
 
 
